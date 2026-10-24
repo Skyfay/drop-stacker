@@ -1,5 +1,6 @@
 package dev.suwizx.dropstacker.gametest
 
+import dev.suwizx.dropstacker.config.DropStackerConfig
 import dev.suwizx.dropstacker.stack.StackEngine
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.BlockPos
@@ -84,6 +85,59 @@ class DropStackerGameTests {
         helper.assertTrue(alive.size == 1, "expected one merged pile, got ${alive.size}: ${alive.map { it.item }}")
         helper.assertTrue(alive[0].item.count == 110, "merged pile should hold 110, got ${alive[0].item.count}")
         alive.forEach { it.discard() }
+        helper.succeed()
+    }
+
+    /** A thrown drop keeps its throw animation: it must not join a pile while it is still flying. */
+    @GameTest
+    fun thrownItemDoesNotMergeInFlight(helper: GameTestHelper) {
+        val pile = spawnPile(helper, Vec3(2.5, 2.0, 2.5), ItemStack(Items.DIAMOND, 100))
+        val thrown = thrownItem(helper, Vec3(2.5, 2.0, 2.5), ItemStack(Items.DIAMOND, 1))
+        helper.level.addFreshEntity(thrown)
+
+        helper.assertTrue(thrown.isAlive && thrown.item.count == 1, "a flying drop must not merge on spawn")
+        helper.assertTrue(StackEngine.absorbNeighbours(pile) == 0 && thrown.isAlive, "a pile must not catch a flying drop")
+        aliveItems(helper).forEach { it.discard() }
+        helper.succeed()
+    }
+
+    /** Once landed, the thrown drop joins the pile, and the pile stays where it is. */
+    @GameTest
+    fun landedItemJoinsTheBiggerPile(helper: GameTestHelper) {
+        val pile = spawnPile(helper, Vec3(2.5, 2.0, 2.5), ItemStack(Items.DIAMOND, 100))
+        val pilePos = pile.position()
+        val thrown = thrownItem(helper, Vec3(4.5, 2.0, 2.5), ItemStack(Items.DIAMOND, 1))
+        helper.level.addFreshEntity(thrown)
+        thrown.setOnGround(true)
+
+        StackEngine.absorbNeighbours(thrown)
+        helper.assertTrue(!thrown.isAlive, "the landed drop should have joined the pile")
+        helper.assertTrue(pile.isAlive && pile.item.count == 101, "the pile should hold 101, got ${pile.item.count}")
+        helper.assertTrue(pile.position() == pilePos, "the pile must not move to the small drop")
+        pile.discard()
+        helper.succeed()
+    }
+
+    /** A small item scanning first must not pull a big pile over to itself. */
+    @GameTest
+    fun smallItemDoesNotPullBigPile(helper: GameTestHelper) {
+        // Spawned without merge-on-spawn, as if both had been loaded from disk, then the small one scans first.
+        DropStackerConfig.mergeOnSpawn = false
+        val pile: ItemEntity
+        val small: ItemEntity
+        try {
+            pile = spawnPile(helper, Vec3(2.5, 2.0, 2.5), ItemStack(Items.DIAMOND, 100))
+            small = spawnPile(helper, Vec3(5.5, 2.0, 2.5), ItemStack(Items.DIAMOND, 5))
+        } finally {
+            DropStackerConfig.mergeOnSpawn = true
+        }
+        val pilePos = pile.position()
+        StackEngine.absorbNeighbours(small)
+
+        helper.assertTrue(pile.position() == pilePos, "the big pile must not move")
+        helper.assertTrue(pile.isAlive && pile.item.count == 105, "the big pile should take the small one in, got ${pile.item.count}")
+        helper.assertTrue(!small.isAlive, "the small item should be gone")
+        pile.discard()
         helper.succeed()
     }
 
@@ -241,6 +295,14 @@ class DropStackerGameTests {
         val pos = helper.absoluteVec(relative)
         val entity = ItemEntity(helper.level, pos.x, pos.y, pos.z, stack, 0.0, 0.0, 0.0)
         helper.level.addFreshEntity(entity)
+        return entity
+    }
+
+    /** A drop as a player throws it: with a thrower and moving. */
+    private fun thrownItem(helper: GameTestHelper, relative: Vec3, stack: ItemStack): ItemEntity {
+        val pos = helper.absoluteVec(relative)
+        val entity = ItemEntity(helper.level, pos.x, pos.y, pos.z, stack, 0.3, 0.2, 0.0)
+        entity.setThrower(helper.makeMockPlayer(GameType.SURVIVAL))
         return entity
     }
 

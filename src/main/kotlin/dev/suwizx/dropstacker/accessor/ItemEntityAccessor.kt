@@ -19,6 +19,9 @@ interface ItemEntityAccessor {
 
     fun dropstacker_setAge(value: Int)
 
+    /** Whether the drop was thrown by someone (a player, or a villager or piglin handing items over). */
+    fun dropstacker_hasThrower(): Boolean
+
     /** Vanilla's private `target`: the only player allowed to pick this drop up, if any. */
     fun dropstacker_target(): UUID?
 

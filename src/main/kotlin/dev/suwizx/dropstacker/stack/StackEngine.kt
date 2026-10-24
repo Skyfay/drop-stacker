@@ -75,6 +75,9 @@ object StackEngine {
         if (access.dropstacker_pickupDelay() == INFINITE_PICKUP_DELAY) return false
         if (entity.age == INFINITE_LIFETIME) return false
         if (entity.age >= DropStackerConfig.despawnTicks) return false
+        // A thrown drop keeps its throw: it only joins a pile once it has landed (or floats).
+        // Mob and block drops have no thrower and still merge the moment they spawn.
+        if (access.dropstacker_hasThrower() && !entity.onGround() && !entity.isInWater) return false
         if (stack.isEmpty || stack.count >= effectiveMax(stack)) return false
         return ItemRules.isStackable(stack)
     }
@@ -114,13 +117,26 @@ object StackEngine {
         )
         if (scratch.isEmpty()) return 0
 
-        val startCount = hostStack.count
+        // The biggest pile stays where it is and takes the others in, as vanilla merges into the
+        // larger stack. Otherwise a single item that happens to scan first pulls a whole pile over
+        // to itself, and the pile visibly jumps.
+        var receiver = host
+        for (other in scratch) {
+            if (other.item.count > receiver.item.count) receiver = other
+        }
+        if (receiver !== host) {
+            scratch.remove(receiver)
+            scratch.add(host)
+        }
+
+        val receiverStack = receiver.item
+        val startCount = receiverStack.count
         var pending = startCount
         var absorbed = 0
 
         for (other in scratch) {
             if (pending >= max) break
-            val taken = drain(host, other, max - pending)
+            val taken = drain(receiver, other, max - pending)
             if (taken <= 0) continue
             pending += taken
             if (!other.isAlive) absorbed++
@@ -133,11 +149,11 @@ object StackEngine {
         // compares by equality, so mutating the tracked stack in place would leave clients showing
         // a stale count forever; vanilla's own merge builds a new stack for exactly this reason.
         // This also fires the setItem hook, which refreshes the label.
-        host.item = hostStack.copyWithCount(pending)
+        receiver.item = receiverStack.copyWithCount(pending)
 
         mergesPerformed++
         entitiesCollapsed += absorbed
-        (host as ItemEntityAccessor).dropstacker_resetBackoff()
+        (receiver as ItemEntityAccessor).dropstacker_resetBackoff()
         return absorbed
     }
 

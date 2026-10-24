@@ -92,6 +92,8 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
         this.age = value
     }
 
+    override fun dropstacker_hasThrower(): Boolean = this.thrower != null
+
     override fun dropstacker_target(): UUID? = this.target
 
     override fun dropstacker_setOwnership(target: UUID?, thrower: EntityReference<Entity>?) {
