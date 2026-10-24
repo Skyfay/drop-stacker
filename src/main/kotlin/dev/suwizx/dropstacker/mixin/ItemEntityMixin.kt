@@ -13,6 +13,9 @@ import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.level.storage.ValueInput
 import net.minecraft.world.level.storage.ValueOutput
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation
+import net.minecraft.world.entity.player.Player
 import org.spongepowered.asm.mixin.Mixin
 import org.spongepowered.asm.mixin.Shadow
 import org.spongepowered.asm.mixin.Unique
@@ -209,6 +212,12 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
             // New instance so the synched stack actually changes; also refreshes the label.
             entity.item = thisStack.copyWithCount(thisStack.count + taken)
         }
+    }
+
+    /** Players pick a pile up one vanilla stack per touch; see [StackEngine.withVanillaSizedPile]. */
+    @WrapMethod(method = ["playerTouch"])
+    private fun dropstackerPlayerTakesOneStack(player: Player, original: Operation<Void>) {
+        StackEngine.withVanillaSizedPile(this as Any as ItemEntity) { original.call(player) }
     }
 
     // --- persistence ---

@@ -15,6 +15,7 @@ import net.minecraft.world.entity.Mob
 import net.minecraft.world.entity.item.ItemEntity
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.level.GameType
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.entity.HopperBlockEntity
 import net.minecraft.world.level.storage.TagValueInput
@@ -83,6 +84,56 @@ class DropStackerGameTests {
         helper.assertTrue(alive.size == 1, "expected one merged pile, got ${alive.size}: ${alive.map { it.item }}")
         helper.assertTrue(alive[0].item.count == 110, "merged pile should hold 110, got ${alive[0].item.count}")
         alive.forEach { it.discard() }
+        helper.succeed()
+    }
+
+    /**
+     * Players pick a pile up one vanilla stack per touch. Logging mods such as Ledger record the
+     * picked-up stack with the vanilla item codec, which rejects counts above 99.
+     */
+    @GameTest
+    fun playerPicksUpOneStackPerTouch(helper: GameTestHelper) {
+        val player = helper.makeMockPlayer(GameType.SURVIVAL)
+        val pile = spawnPile(helper, Vec3(2.5, 2.0, 2.5), ItemStack(Items.COBBLESTONE, 200))
+        pile.setNoPickUpDelay()
+
+        pile.playerTouch(player)
+        helper.assertTrue(player.inventory.countItem(Items.COBBLESTONE) == 64, "one touch should take one stack, got ${player.inventory.countItem(Items.COBBLESTONE)}")
+        helper.assertTrue(pile.isAlive && pile.item.count == 136, "136 should stay on the ground, got ${pile.item.count}")
+
+        repeat(3) { pile.playerTouch(player) }
+        helper.assertTrue(player.inventory.countItem(Items.COBBLESTONE) == 200, "all 200 should be picked up, got ${player.inventory.countItem(Items.COBBLESTONE)}")
+        helper.assertTrue(aliveItems(helper).isEmpty(), "the pile should be gone")
+        helper.succeed()
+    }
+
+    /** A player with a full inventory standing on a pile must not cause any change (and so no packet). */
+    @GameTest
+    fun fullInventoryLeavesPileUntouched(helper: GameTestHelper) {
+        val player = helper.makeMockPlayer(GameType.SURVIVAL)
+        for (slot in 0 until player.inventory.containerSize) player.inventory.setItem(slot, ItemStack(Items.DIRT, 64))
+        val pile = spawnPile(helper, Vec3(2.5, 2.0, 2.5), ItemStack(Items.COBBLESTONE, 200))
+        pile.setNoPickUpDelay()
+        val before = pile.item
+
+        pile.playerTouch(player)
+        helper.assertTrue(pile.item === before && before.count == 200, "pile should be the untouched stack, got ${pile.item}")
+        helper.succeed()
+    }
+
+    /**
+     * A new drop joins the pile already lying there instead of swallowing it, so the dropped entity
+     * still holds exactly what was dropped (which is what Ledger logs as the drop).
+     */
+    @GameTest
+    fun newDropJoinsExistingPile(helper: GameTestHelper) {
+        val pile = spawnPile(helper, Vec3(2.5, 2.0, 2.5), ItemStack(Items.DIAMOND, 100))
+        val drop = spawnPile(helper, Vec3(2.5, 2.0, 2.5), ItemStack(Items.DIAMOND, 64))
+
+        helper.assertTrue(pile.isAlive && pile.item.count == 164, "existing pile should hold 164, got ${pile.item.count}")
+        helper.assertTrue(drop.isRemoved, "the new drop should have joined the pile")
+        helper.assertTrue(drop.item.count == 64, "the joined drop should still report what was dropped, got ${drop.item.count}")
+        pile.discard()
         helper.succeed()
     }
 

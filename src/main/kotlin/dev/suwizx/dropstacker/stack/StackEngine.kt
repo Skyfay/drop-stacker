@@ -142,6 +142,57 @@ object StackEngine {
     }
 
     /**
+     * Lets the piles around a freshly spawned [newcomer] take it in, then absorbs whatever is left
+     * around it as before.
+     *
+     * The newcomer joins an existing pile rather than swallowing it, so the entity a player just
+     * dropped still holds exactly what was dropped. Logging mods (Ledger) record that entity's
+     * stack as the drop; when it swallowed the pile, they logged the whole pile, and piles above
+     * 99 failed to serialize at all.
+     */
+    fun joinNeighbours(newcomer: ItemEntity) {
+        if (!DropStackerConfig.enabled) return
+        val level = newcomer.level() as? ServerLevel ?: return
+
+        val stack = newcomer.item
+        if (!isMergeable(newcomer, stack)) return
+
+        val max = effectiveMax(stack)
+        val target = (newcomer as ItemEntityAccessor).dropstacker_target()
+        val radius = DropStackerConfig.radius
+        val box = newcomer.boundingBox.inflate(radius, DropStackerConfig.verticalRadius, radius)
+
+        scratch.clear()
+        level.getEntities(
+            ITEM_ENTITY_TEST,
+            box,
+            { other ->
+                other !== newcomer &&
+                    ItemStack.isSameItemSameComponents(stack, other.item) &&
+                    Objects.equals(target, (other as ItemEntityAccessor).dropstacker_target()) &&
+                    isMergeable(other, other.item)
+            },
+            scratch,
+            DropStackerConfig.maxMergePerPass,
+        )
+
+        for (pile in scratch) {
+            if (!newcomer.isAlive) break
+            val pileStack = pile.item
+            val taken = drain(pile, newcomer, max - pileStack.count)
+            if (taken <= 0) continue
+            // New instance, as in absorbNeighbours, so the change syncs.
+            pile.item = pileStack.copyWithCount(pileStack.count + taken)
+            mergesPerformed++
+            if (!newcomer.isAlive) entitiesCollapsed++
+            (pile as ItemEntityAccessor).dropstacker_resetBackoff()
+        }
+        scratch.clear()
+
+        if (newcomer.isAlive) absorbNeighbours(newcomer)
+    }
+
+    /**
      * Takes up to [wanted] items out of [other], carrying its pickup delay and age across to [host].
      *
      * @return how many items were taken.
@@ -176,14 +227,18 @@ object StackEngine {
     }
 
     /**
-     * Runs [action] — a vanilla pickup such as a hopper or a mob collecting [entity] — while the
-     * entity holds at most one vanilla-sized stack, then puts the rest of the pile back.
+     * Runs [action] — a vanilla pickup such as a player, a hopper or a mob collecting [entity] —
+     * while the entity holds at most one vanilla-sized stack, then puts the rest of the pile back.
      *
      * Vanilla never sees a ground stack above `maxStackSize`, so several pickup paths move the whole
      * stack into a single slot: hoppers and `SimpleContainer` (villagers, allays, piglins) then trim
      * it to the slot limit and delete the rest, and dolphins, pandas and raiders hold it in a hand
-     * slot that cannot be saved above 99. Handing them one stack at a time keeps every vanilla rule
-     * intact; the pile is simply collected over several pickups.
+     * slot that cannot be saved above 99. Logging mods (Ledger) record picked-up stacks with the
+     * vanilla codec, which rejects counts above 99. Handing every pickup one stack at a time keeps
+     * all of that intact; the pile is simply collected over several pickups.
+     *
+     * The count is lowered in place, not through `setItem`, so a pickup that takes nothing (a full
+     * inventory standing on a pile) leaves no trace and sends no packet.
      */
     fun <T> withVanillaSizedPile(entity: ItemEntity, action: () -> T): T {
         val pile = entity.item
@@ -192,7 +247,7 @@ object StackEngine {
         if (pile.count <= cap || access.dropstacker_collecting) return action()
 
         val overflow = pile.count - cap
-        entity.item = pile.copyWithCount(cap)
+        pile.count = cap
         // Vanilla discards the entity once it has taken everything it was shown; the rest of the
         // pile still lies here, so the entity is kept (see EntityMixin) and refilled below.
         access.dropstacker_collecting = true
@@ -201,20 +256,25 @@ object StackEngine {
             return action()
         } finally {
             access.dropstacker_collecting = false
-            returnOverflow(entity, pile, overflow, tookAll = access.dropstacker_discardedWhileCollecting)
+            returnOverflow(entity, pile, cap, overflow, tookAll = access.dropstacker_discardedWhileCollecting)
             access.dropstacker_discardedWhileCollecting = false
         }
     }
 
-    private fun returnOverflow(entity: ItemEntity, pile: ItemStack, overflow: Int, tookAll: Boolean) {
+    private fun returnOverflow(entity: ItemEntity, pile: ItemStack, shown: Int, overflow: Int, tookAll: Boolean) {
         if (!entity.isRemoved) {
-            // A pickup that discarded the entity took everything it was shown. What the entity
-            // still holds must not be counted: some mobs (dolphins, pandas) keep the very same
-            // ItemStack instance in their hand, so reading it back would duplicate those items.
-            // Otherwise pickups shrink the stack in place, so read it fresh. Either way a new
-            // instance is written so the change syncs and the label refreshes.
-            val left = if (tookAll) ItemStack.EMPTY else entity.item
-            entity.item = (if (left.isEmpty) pile else left).copyWithCount(left.count + overflow)
+            val current = entity.item
+            when {
+                // A pickup that discarded the entity took everything it was shown. Nothing it left
+                // behind may be counted: some mobs (dolphins, pandas) keep the very same ItemStack
+                // instance in their hand, and the player pickup resets its count after discarding.
+                tookAll -> entity.item = pile.copyWithCount(overflow)
+                // Nothing was taken: restore in place, so nothing is synced.
+                current === pile && pile.count == shown -> pile.count = shown + overflow
+                // Partly taken, in place or through setItem: write a new instance so the change
+                // syncs and the label refreshes.
+                else -> entity.item = (if (current.isEmpty) pile else current).copyWithCount(current.count + overflow)
+            }
             return
         }
 

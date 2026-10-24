@@ -15,7 +15,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable
  *
  * Merging used to be purely pull-based, so a fresh drop waited for its own tick to come round
  * before it could join a pile. Here a newly spawned item entity is offered to the world the moment
- * it is added, in the same tick it spawned.
+ * it is added, in the same tick it spawned: it joins the piles around it (see
+ * [StackEngine.joinNeighbours]).
  *
  * `addFreshEntity` is targeted rather than Fabric's `ServerEntityEvents.ENTITY_LOAD` because it
  * fires only for genuinely new entities. Loading a chunk full of ground items goes through a
@@ -30,6 +31,6 @@ abstract class ServerLevelMixin {
         if (!DropStackerConfig.enabled || !DropStackerConfig.mergeOnSpawn) return
         if (entity !is ItemEntity) return
 
-        StackEngine.absorbNeighbours(entity)
+        StackEngine.joinNeighbours(entity)
     }
 }
