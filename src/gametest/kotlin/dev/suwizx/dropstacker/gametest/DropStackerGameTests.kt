@@ -1,10 +1,14 @@
 package dev.suwizx.dropstacker.gametest
 
 import dev.suwizx.dropstacker.config.DropStackerConfig
+import dev.suwizx.dropstacker.config.LabelMode
+import dev.suwizx.dropstacker.stack.LabelVisibility
 import dev.suwizx.dropstacker.stack.StackEngine
 import net.fabricmc.fabric.api.gametest.v1.GameTest
+import net.minecraft.ChatFormatting
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTestHelper
+import net.minecraft.network.chat.TextColor
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.chat.Component
 import net.minecraft.server.level.ServerLevel
@@ -286,6 +290,58 @@ class DropStackerGameTests {
         helper.succeed()
     }
 
+    /** The defaults must keep rendering exactly the label the mod always had. */
+    @GameTest
+    fun defaultLabelLooksAsBefore(helper: GameTestHelper) {
+        val label = pile(helper, 200).customName?.string
+        helper.assertTrue(label == "[×200 | 5:00]", "unexpected default label '$label'")
+        helper.succeed()
+    }
+
+    @GameTest
+    fun labelFormatIsConfigurable(helper: GameTestHelper) = withConfig({
+        labelFormat = "&f{count}"
+    }) {
+        val name = pile(helper, 200).customName
+        helper.assertTrue(name?.string == "200", "label should be the bare count, got '${name?.string}'")
+        val color = name?.toFlatList()?.firstOrNull { it.string.isNotEmpty() }?.style?.color
+        helper.assertTrue(color == TextColor.fromLegacyFormat(ChatFormatting.WHITE), "count should be white, got $color")
+
+        DropStackerConfig.labelFormat = "&#ff8800{stacks} stacks{timer}"
+        DropStackerConfig.timerFormat = " &7({time})"
+        val styled = pile(helper, 130).customName
+        helper.assertTrue(styled?.string == "3 stacks (5:00)", "unexpected label '${styled?.string}'")
+        helper.succeed()
+    }
+
+    /** `OVERSIZED_ONLY` labels a pile only once it is larger than one vanilla stack of its item. */
+    @GameTest
+    fun oversizedOnlyLabelsPilesAboveOneStack(helper: GameTestHelper) = withConfig({
+        labelMode = LabelMode.OVERSIZED_ONLY
+    }) {
+        helper.assertTrue(pile(helper, 64).customName == null, "a full stack of 64 needs no label")
+        helper.assertTrue(pile(helper, 65).customName != null, "65 diamonds should be labelled")
+        helper.assertTrue(itemPile(helper, ItemStack(Items.TOTEM_OF_UNDYING, 1)).customName == null, "a single totem needs no label")
+        helper.assertTrue(itemPile(helper, ItemStack(Items.TOTEM_OF_UNDYING, 2)).customName != null, "two totems should be labelled")
+        helper.succeed()
+    }
+
+    /** With `labelThroughWalls` off, clients are told a labelled pile is "discrete", which hides its name tag behind blocks. */
+    @GameTest
+    fun labelCanBeHiddenBehindWalls(helper: GameTestHelper) = withConfig({
+        labelThroughWalls = false
+    }) {
+        val labelled = pile(helper, 200)
+        val sent = LabelVisibility.withDiscreteFlag(labelled, labelled.entityData.nonDefaultValues!!)
+        val flags = sent.single { it.id() == 0 }.value() as Byte
+        helper.assertTrue(flags.toInt() and LabelVisibility.DISCRETE_FLAG_MASK != 0, "labelled pile should be sent as discrete, flags $flags")
+
+        DropStackerConfig.labelThroughWalls = true
+        val unchanged = LabelVisibility.withDiscreteFlag(labelled, labelled.entityData.nonDefaultValues!!)
+        helper.assertTrue(unchanged.none { it.id() == 0 }, "nothing should change while labels may show through walls")
+        helper.succeed()
+    }
+
     private fun pile(helper: GameTestHelper, count: Int): ItemEntity {
         val pos = helper.absoluteVec(Vec3(1.5, 2.0, 1.5))
         return ItemEntity(helper.level, pos.x, pos.y, pos.z, ItemStack(Items.DIAMOND, count))
@@ -308,6 +364,34 @@ class DropStackerGameTests {
 
     private fun aliveItems(helper: GameTestHelper): List<ItemEntity> =
         helper.getEntities(EntityTypes.ITEM).filter { it.isAlive && !it.item.isEmpty }
+
+    private fun itemPile(helper: GameTestHelper, stack: ItemStack): ItemEntity {
+        val pos = helper.absoluteVec(Vec3(1.5, 2.0, 1.5))
+        return ItemEntity(helper.level, pos.x, pos.y, pos.z, stack)
+    }
+
+    /**
+     * Runs [test] with temporarily changed config. Every test body runs synchronously within one
+     * tick, so other tests never observe the change.
+     */
+    private fun withConfig(change: DropStackerConfig.() -> Unit, test: () -> Unit) {
+        val before = listOf(
+            DropStackerConfig.labelMode, DropStackerConfig.labelFormat, DropStackerConfig.timerFormat,
+            DropStackerConfig.labelThroughWalls, DropStackerConfig.showDespawnTimer,
+        )
+        try {
+            DropStackerConfig.change()
+            DropStackerConfig.labelSettingsChanged()
+            test()
+        } finally {
+            DropStackerConfig.labelMode = before[0] as LabelMode
+            DropStackerConfig.labelFormat = before[1] as String
+            DropStackerConfig.timerFormat = before[2] as String
+            DropStackerConfig.labelThroughWalls = before[3] as Boolean
+            DropStackerConfig.showDespawnTimer = before[4] as Boolean
+            DropStackerConfig.labelSettingsChanged()
+        }
+    }
 
     /** Saves [entity] the way a chunk save does, failing the test on any serialization problem. */
     private fun save(helper: GameTestHelper, entity: ItemEntity): CompoundTag {

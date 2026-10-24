@@ -7,7 +7,8 @@ A Fabric mod for Minecraft that automatically stacks dropped item entities on th
 - **Instant Merging:** New drops join a nearby pile the moment they spawn — in the same tick, not after a scan interval. A mob's drops collapse before you see them land. Thrown items (a player pressing Q, villagers and piglins handing items over) keep their throw and join once they land.
 - **Whole-Pile Collapse:** Each merge pass drains every compatible neighbour at once, so a 100-item pile becomes one entity in a single pass instead of one item per pass.
 - **Limitless Piles:** Stacks beyond vanilla's 64-item limit — up to your configured `maxStackSize`, with per-item overrides.
-- **Visual Feedback:** Colorful stack count label displayed above items (configurable thresholds).
+- **Visual Feedback:** Colorful stack count label displayed above items (configurable thresholds and format).
+- **Configurable Labels:** Format the label with placeholders and `&` colour codes, show it only on piles larger than one vanilla stack, and optionally hide it behind blocks.
 - **Despawn Timer:** Optional countdown on the label with urgency-based color coding (supports infinite items with `∞`).
 - **Adaptive Scanning:** Idle piles progressively back off from scanning (up to `maxScanInterval`), so a world full of settled items costs almost nothing. Safe because new drops push into piles on spawn rather than waiting to be polled.
 - **Item Rules:** Blacklist, whitelist, and per-item stack-size overrides — all accepting item tags (`#minecraft:logs`) as well as exact ids.
@@ -61,6 +62,9 @@ The config file is created automatically at `.minecraft/config/drop-stacker.json
   "countLowThreshold": 64,
   "countHighThreshold": 500,
   "hideSingleItemLabel": false,
+  "labelFormat": "&6[{countColor}×{count}{timer}&6]",
+  "timerFormat": "&b | {timerColor}{time}",
+  "labelThroughWalls": true,
   "despawnTicks": 6000,
   "blacklist": [],
   "whitelist": [],
@@ -79,11 +83,14 @@ The config file is created automatically at `.minecraft/config/drop-stacker.json
 | `maxScanInterval` | Slowest scan rate an idle pile backs off to | `100` |
 | `maxMergePerPass` | Max neighbours absorbed in one pass | `64` |
 | `ageInheritance` | Despawn timer on merge: `YOUNGEST`, `KEEP_RECEIVER`, or `OLDEST` | `YOUNGEST` |
-| `labelMode` | When to show the label: `ALWAYS`, `STACKED_ONLY`, or `NEVER` | `ALWAYS` |
+| `labelMode` | When to show the label: `ALWAYS`, `STACKED_ONLY`, `OVERSIZED_ONLY`, or `NEVER` | `ALWAYS` |
 | `showDespawnTimer` | Show despawn countdown on the label | `true` |
 | `countLowThreshold` | Count at which the label turns Yellow | `64` |
 | `countHighThreshold` | Count at which the label turns Red | `500` |
 | `hideSingleItemLabel`| Hide the label if the stack only has 1 item | `false` |
+| `labelFormat` | Text of the label, see [Label format](#label-format) | `&6[{countColor}×{count}{timer}&6]` |
+| `timerFormat` | Text inserted for `{timer}` while a despawn timer is shown | `&b \| {timerColor}{time}` |
+| `labelThroughWalls` | Let players see labels through blocks, like other name tags | `true` |
 | `despawnTicks` | World despawn rate (matches timer to server settings) | `6000` |
 | `blacklist` | Items that are never stacked | `[]` |
 | `whitelist` | If non-empty, *only* these items are stacked | `[]` |
@@ -102,6 +109,35 @@ The config file is created automatically at `.minecraft/config/drop-stacker.json
   }
 }
 ```
+
+### Label format
+
+`labelFormat` and `timerFormat` take these placeholders:
+
+| Placeholder | Value |
+|---|---|
+| `{count}` | Items in the pile |
+| `{stacks}` | Vanilla stacks the pile fills (`130` diamonds → `3`) |
+| `{countColor}` | Green, yellow or red by `countLowThreshold`/`countHighThreshold` |
+| `{timer}` | `timerFormat`, or nothing when no timer is shown |
+| `{time}` | Remaining time as `m:ss`, or `∞` |
+| `{timerColor}` | Green, yellow or red by remaining time |
+
+Colours and formats use `&` codes: `&0`–`&f`, `&l` bold, `&o` italic, `&n` underline, `&m` strikethrough, `&k` obfuscated, `&r` reset, `&#RRGGBB` for any colour, and `&&` for a literal `&`. As in vanilla, a colour code resets bold/italic/… set before it.
+
+A format without `{timer}`, `{time}` or `{timerColor}` never changes while a pile just lies there, so labels are only resent when the count changes. For a plain white count on piles larger than one stack:
+
+```json
+{
+  "labelMode": "OVERSIZED_ONLY",
+  "labelFormat": "&f{count}",
+  "labelThroughWalls": false
+}
+```
+
+`OVERSIZED_ONLY` labels a pile once it holds more than one vanilla stack of its item: from 2 totems, from 65 planks.
+
+With `labelThroughWalls` set to `false`, clients are told that labelled piles are "discrete" (like a sneaking player), so the vanilla client hides their name tag behind blocks. The flag is only added to the data sent to clients; the item itself is unchanged on the server.
 
 ### A note on `ageInheritance`
 

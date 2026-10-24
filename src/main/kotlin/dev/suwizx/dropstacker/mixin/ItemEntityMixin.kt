@@ -48,6 +48,10 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
     @Unique
     private var dropstackerLabelKey: Long = Long.MIN_VALUE + 1
 
+    /** The [StackLabel.generation] the current label was built with. */
+    @Unique
+    private var dropstackerLabelGeneration: Int = -1
+
     /** Current adaptive scan interval, grown while scans keep finding nothing. */
     @Unique
     private var dropstackerBackoff: Int = 0
@@ -125,8 +129,9 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
         if (dropstacker_hasForeignName()) return
 
         val key = StackLabel.labelKey(entity, count)
-        if (key == dropstackerLabelKey) return
+        if (key == dropstackerLabelKey && dropstackerLabelGeneration == StackLabel.generation) return
         dropstackerLabelKey = key
+        dropstackerLabelGeneration = StackLabel.generation
 
         val label = StackLabel.build(entity, count)
         dropstackerAppliedLabel = label
@@ -154,7 +159,7 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
         // every client paid a synched-data lookup per item entity per tick for nothing.
         if (entity.level().isClientSide || !DropStackerConfig.enabled || !entity.isAlive) return
 
-        if (DropStackerConfig.showDespawnTimer && DropStackerConfig.labelMode != LabelMode.NEVER) {
+        if (StackLabel.showsTimer()) {
             // The rendered timer changes at most once per second, so checking more often than every
             // 20 ticks can only ever be wasted work. Staggered by entity id so a farm's worth of
             // drops don't all rebuild their labels on the same tick.

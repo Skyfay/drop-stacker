@@ -1,6 +1,7 @@
 package dev.suwizx.dropstacker.config
 
 import com.google.gson.GsonBuilder
+import dev.suwizx.dropstacker.stack.StackLabel
 import net.fabricmc.loader.api.FabricLoader
 import org.slf4j.LoggerFactory
 import java.io.File
@@ -13,14 +14,23 @@ import java.io.File
  */
 enum class AgeInheritance { YOUNGEST, KEEP_RECEIVER, OLDEST }
 
-/** When the count/timer name tag is attached to an item entity. */
-enum class LabelMode { ALWAYS, STACKED_ONLY, NEVER }
+/**
+ * When the count/timer name tag is attached to an item entity.
+ *
+ * [OVERSIZED_ONLY] labels only piles larger than one vanilla stack of their item (2+ totems, 65+
+ * planks), i.e. exactly the piles a player could not tell apart from a normal drop.
+ */
+enum class LabelMode { ALWAYS, STACKED_ONLY, OVERSIZED_ONLY, NEVER }
 
 object DropStackerConfig {
     private val logger = LoggerFactory.getLogger("drop-stacker-config")
 
     /** Vanilla `ItemEntity.LIFETIME`; used when [despawnTicks] is left unset. */
     const val VANILLA_LIFETIME: Int = 6000
+
+    /** Renders the label as it looked before label formats existed. */
+    const val DEFAULT_LABEL_FORMAT: String = "&6[{countColor}×{count}{timer}&6]"
+    const val DEFAULT_TIMER_FORMAT: String = "&b | {timerColor}{time}"
 
     var enabled: Boolean = true
     var mergeOnSpawn: Boolean = true
@@ -36,6 +46,9 @@ object DropStackerConfig {
     var countLowThreshold: Int = 64
     var countHighThreshold: Int = 500
     var hideSingleItemLabel: Boolean = false
+    var labelFormat: String = DEFAULT_LABEL_FORMAT
+    var timerFormat: String = DEFAULT_TIMER_FORMAT
+    var labelThroughWalls: Boolean = true
     var despawnTicks: Int = VANILLA_LIFETIME
     var blacklist: List<String> = emptyList()
     var whitelist: List<String> = emptyList()
@@ -78,6 +91,9 @@ object DropStackerConfig {
             countLowThreshold = data.countLowThreshold ?: 64
             countHighThreshold = data.countHighThreshold ?: 500
             hideSingleItemLabel = data.hideSingleItemLabel ?: false
+            labelFormat = data.labelFormat ?: DEFAULT_LABEL_FORMAT
+            timerFormat = data.timerFormat ?: DEFAULT_TIMER_FORMAT
+            labelThroughWalls = data.labelThroughWalls ?: true
             despawnTicks = (data.despawnTicks ?: VANILLA_LIFETIME).coerceAtLeast(1)
             blacklist = data.blacklist ?: emptyList()
             whitelist = data.whitelist ?: emptyList()
@@ -90,6 +106,12 @@ object DropStackerConfig {
         }
 
         ItemRules.invalidate()
+        labelSettingsChanged()
+    }
+
+    /** Makes every label rebuild on its next refresh, e.g. after the format changed. */
+    fun labelSettingsChanged() {
+        StackLabel.settingsChanged()
     }
 
     fun save() {
@@ -115,6 +137,9 @@ object DropStackerConfig {
         countLowThreshold = countLowThreshold,
         countHighThreshold = countHighThreshold,
         hideSingleItemLabel = hideSingleItemLabel,
+        labelFormat = labelFormat,
+        timerFormat = timerFormat,
+        labelThroughWalls = labelThroughWalls,
         despawnTicks = despawnTicks,
         blacklist = blacklist,
         whitelist = whitelist,
@@ -136,6 +161,9 @@ object DropStackerConfig {
         var countLowThreshold: Int? = null,
         var countHighThreshold: Int? = null,
         var hideSingleItemLabel: Boolean? = null,
+        var labelFormat: String? = null,
+        var timerFormat: String? = null,
+        var labelThroughWalls: Boolean? = null,
         var despawnTicks: Int? = null,
         var blacklist: List<String>? = null,
         var whitelist: List<String>? = null,
