@@ -8,6 +8,7 @@ import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.entity.item.ItemEntity
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.level.entity.EntityTypeTest
+import java.util.Objects
 
 /**
  * All merge logic. This is the only place in the mod that scans for neighbours.
@@ -29,6 +30,12 @@ object StackEngine {
      * save (see the save/load hooks in `ItemEntityMixin`). Part of the on-disk format: never rename.
      */
     const val SAVED_COUNT_KEY = "DropStackerCount"
+
+    /**
+     * Entity NBT flag marking the saved custom name as the mod's own label rather than a real name.
+     * Part of the on-disk format: never rename.
+     */
+    const val SAVED_LABEL_KEY = "DropStackerLabel"
 
     private val ITEM_ENTITY_TEST: EntityTypeTest<net.minecraft.world.entity.Entity, ItemEntity> =
         EntityTypeTest.forClass(ItemEntity::class.java)
@@ -86,6 +93,9 @@ object StackEngine {
         if (!isMergeable(host, hostStack)) return 0
 
         val max = effectiveMax(hostStack)
+        // Vanilla only merges drops reserved for the same player; a reserved drop absorbed into a
+        // public pile would become pickable by anyone (and the other way round).
+        val hostTarget = (host as ItemEntityAccessor).dropstacker_target()
         val radius = DropStackerConfig.radius
         val box = host.boundingBox.inflate(radius, DropStackerConfig.verticalRadius, radius)
 
@@ -96,6 +106,7 @@ object StackEngine {
             { other ->
                 other !== host &&
                     ItemStack.isSameItemSameComponents(hostStack, other.item) &&
+                    Objects.equals(hostTarget, (other as ItemEntityAccessor).dropstacker_target()) &&
                     isMergeable(other, other.item)
             },
             scratch,
@@ -162,5 +173,56 @@ object StackEngine {
             other.item = otherStack.copyWithCount(remaining)
         }
         return taken
+    }
+
+    /**
+     * Runs [action] — a vanilla pickup such as a hopper or a mob collecting [entity] — while the
+     * entity holds at most one vanilla-sized stack, then puts the rest of the pile back.
+     *
+     * Vanilla never sees a ground stack above `maxStackSize`, so several pickup paths move the whole
+     * stack into a single slot: hoppers and `SimpleContainer` (villagers, allays, piglins) then trim
+     * it to the slot limit and delete the rest, and dolphins, pandas and raiders hold it in a hand
+     * slot that cannot be saved above 99. Handing them one stack at a time keeps every vanilla rule
+     * intact; the pile is simply collected over several pickups.
+     */
+    fun <T> withVanillaSizedPile(entity: ItemEntity, action: () -> T): T {
+        val pile = entity.item
+        val cap = pile.maxStackSize
+        val access = entity as ItemEntityAccessor
+        if (pile.count <= cap || access.dropstacker_collecting) return action()
+
+        val overflow = pile.count - cap
+        entity.item = pile.copyWithCount(cap)
+        // Vanilla discards the entity once it has taken everything it was shown; the rest of the
+        // pile still lies here, so the entity is kept (see EntityMixin) and refilled below.
+        access.dropstacker_collecting = true
+        access.dropstacker_discardedWhileCollecting = false
+        try {
+            return action()
+        } finally {
+            access.dropstacker_collecting = false
+            returnOverflow(entity, pile, overflow, tookAll = access.dropstacker_discardedWhileCollecting)
+            access.dropstacker_discardedWhileCollecting = false
+        }
+    }
+
+    private fun returnOverflow(entity: ItemEntity, pile: ItemStack, overflow: Int, tookAll: Boolean) {
+        if (!entity.isRemoved) {
+            // A pickup that discarded the entity took everything it was shown. What the entity
+            // still holds must not be counted: some mobs (dolphins, pandas) keep the very same
+            // ItemStack instance in their hand, so reading it back would duplicate those items.
+            // Otherwise pickups shrink the stack in place, so read it fresh. Either way a new
+            // instance is written so the change syncs and the label refreshes.
+            val left = if (tookAll) ItemStack.EMPTY else entity.item
+            entity.item = (if (left.isEmpty) pile else left).copyWithCount(left.count + overflow)
+            return
+        }
+
+        // Removed some other way than discard(): a removed entity cannot be revived, so the rest
+        // continues as a new entity in the same spot.
+        val level = entity.level() as? ServerLevel ?: return
+        val rest = ItemEntity(level, entity.x, entity.y, entity.z, pile.copyWithCount(overflow), 0.0, 0.0, 0.0)
+        (entity as ItemEntityAccessor).dropstacker_copyStateTo(rest)
+        level.addFreshEntity(rest)
     }
 }

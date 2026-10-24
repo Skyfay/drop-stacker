@@ -1,16 +1,26 @@
 package dev.suwizx.dropstacker.gametest
 
+import dev.suwizx.dropstacker.stack.StackEngine
 import net.fabricmc.fabric.api.gametest.v1.GameTest
+import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.network.chat.Component
+import net.minecraft.server.level.ServerLevel
 import net.minecraft.util.ProblemReporter
+import net.minecraft.world.SimpleContainer
 import net.minecraft.world.entity.EntityTypes
+import net.minecraft.world.entity.EquipmentSlot
+import net.minecraft.world.entity.Mob
 import net.minecraft.world.entity.item.ItemEntity
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.entity.HopperBlockEntity
 import net.minecraft.world.level.storage.TagValueInput
 import net.minecraft.world.level.storage.TagValueOutput
 import net.minecraft.world.phys.Vec3
+import java.util.UUID
 
 /**
  * Server gametests, run by `./gradlew runGameTest` (and so by `./gradlew build`).
@@ -76,10 +86,115 @@ class DropStackerGameTests {
         helper.succeed()
     }
 
+    /**
+     * A hopper used to put a whole oversized pile into one slot, where vanilla's `setItem` trims it
+     * to 64 and the rest was deleted. Every item must end up either in the hopper or still on the
+     * ground.
+     */
+    @GameTest
+    fun hopperTakesOversizedPileWithoutLoss(helper: GameTestHelper) {
+        val hopperPos = BlockPos(1, 1, 1)
+        helper.setBlock(hopperPos, Blocks.HOPPER)
+        val hopper = helper.getBlockEntity(hopperPos, HopperBlockEntity::class.java)
+        val pile = spawnPile(helper, Vec3(1.5, 2.0, 1.5), ItemStack(Items.COBBLESTONE, 200))
+
+        repeat(5) {
+            HopperBlockEntity.addItem(hopper, pile)
+            val inHopper = (0 until hopper.containerSize).sumOf { hopper.getItem(it).count }
+            val onGround = aliveItems(helper).sumOf { it.item.count }
+            helper.assertTrue(inHopper + onGround == 200, "items lost: $inHopper in hopper + $onGround on ground != 200")
+            for (slot in 0 until hopper.containerSize) {
+                helper.assertTrue(hopper.getItem(slot).count <= 64, "slot $slot is oversized: ${hopper.getItem(slot)}")
+            }
+        }
+        helper.assertTrue(aliveItems(helper).isEmpty(), "the pile should be fully collected")
+        helper.succeed()
+    }
+
+    /** Villagers, allays and piglins store pickups in a [SimpleContainer], which trimmed the same way. */
+    @GameTest
+    fun simpleContainerSplitsOversizedStack(helper: GameTestHelper) {
+        val roomy = SimpleContainer(8)
+        val noRest = roomy.addItem(ItemStack(Items.WHEAT_SEEDS, 200))
+        helper.assertTrue(noRest.isEmpty, "everything should fit, got rest $noRest")
+        helper.assertTrue(roomy.countItem(Items.WHEAT_SEEDS) == 200, "container should hold 200, got ${roomy.countItem(Items.WHEAT_SEEDS)}")
+
+        val tight = SimpleContainer(2)
+        val rest = tight.addItem(ItemStack(Items.WHEAT_SEEDS, 200))
+        helper.assertTrue(tight.countItem(Items.WHEAT_SEEDS) == 128, "container should hold 128, got ${tight.countItem(Items.WHEAT_SEEDS)}")
+        helper.assertTrue(rest.count == 72, "rest should be 72, got ${rest.count}")
+        helper.succeed()
+    }
+
+    /** Dolphins take the whole ground stack into their hand; a hand stack over 99 cannot be saved. */
+    @GameTest
+    fun dolphinTakesAtMostOneStack(helper: GameTestHelper) {
+        val dolphin = helper.spawn(EntityTypes.DOLPHIN, Vec3(2.5, 2.0, 2.5))
+        val pile = spawnPile(helper, Vec3(2.5, 2.0, 2.5), ItemStack(Items.COD, 200))
+
+        PICK_UP_ITEM.invoke(dolphin, helper.level, pile)
+
+        val held = dolphin.getItemBySlot(EquipmentSlot.MAINHAND)
+        val onGround = aliveItems(helper).sumOf { it.item.count }
+        helper.assertTrue(held.count <= held.maxStackSize, "dolphin holds an oversized stack: $held")
+        helper.assertTrue(held.count + onGround == 200, "items lost: ${held.count} held + $onGround on ground != 200")
+        dolphin.discard()
+        helper.succeed()
+    }
+
+    /** The mod's own label is saved as the entity's custom name and must still be recognised after a reload. */
+    @GameTest
+    fun labelKeepsUpdatingAfterReload(helper: GameTestHelper) {
+        val loaded = load(helper, save(helper, pile(helper, 200)))
+        helper.assertTrue(StackEngine.isMergeable(loaded, loaded.item), "a reloaded pile must still be mergeable")
+
+        loaded.item = loaded.item.copyWithCount(150)
+        val label = loaded.customName?.string ?: ""
+        helper.assertTrue(label.contains("150"), "label should show the new count, got '$label'")
+        helper.succeed()
+    }
+
+    @GameTest
+    fun foreignNameSurvivesReload(helper: GameTestHelper) {
+        val named = pile(helper, 20)
+        named.customName = Component.literal("Bob")
+        val loaded = load(helper, save(helper, named))
+
+        loaded.item = loaded.item.copyWithCount(10)
+        helper.assertTrue(loaded.customName?.string == "Bob", "a real name must not be replaced, got '${loaded.customName?.string}'")
+        helper.assertTrue(!StackEngine.isMergeable(loaded, loaded.item), "a named drop must not be merged")
+        helper.succeed()
+    }
+
+    /** Vanilla only merges drops reserved for the same player (`target`); so must the mod. */
+    @GameTest
+    fun reservedDropsDoNotMergeWithOthers(helper: GameTestHelper) {
+        val pos = helper.absoluteVec(Vec3(2.5, 2.0, 2.5))
+        val reserved = ItemEntity(helper.level, pos.x, pos.y, pos.z, ItemStack(Items.DIAMOND, 10))
+        reserved.setTarget(UUID.randomUUID())
+        helper.level.addFreshEntity(reserved)
+        helper.level.addFreshEntity(ItemEntity(helper.level, pos.x, pos.y, pos.z, ItemStack(Items.DIAMOND, 10)))
+
+        val alive = aliveItems(helper)
+        helper.assertTrue(alive.size == 2, "reserved and public drops must stay apart, got ${alive.map { it.item }}")
+        alive.forEach { it.discard() }
+        helper.succeed()
+    }
+
     private fun pile(helper: GameTestHelper, count: Int): ItemEntity {
         val pos = helper.absoluteVec(Vec3(1.5, 2.0, 1.5))
         return ItemEntity(helper.level, pos.x, pos.y, pos.z, ItemStack(Items.DIAMOND, count))
     }
+
+    private fun spawnPile(helper: GameTestHelper, relative: Vec3, stack: ItemStack): ItemEntity {
+        val pos = helper.absoluteVec(relative)
+        val entity = ItemEntity(helper.level, pos.x, pos.y, pos.z, stack, 0.0, 0.0, 0.0)
+        helper.level.addFreshEntity(entity)
+        return entity
+    }
+
+    private fun aliveItems(helper: GameTestHelper): List<ItemEntity> =
+        helper.getEntities(EntityTypes.ITEM).filter { it.isAlive && !it.item.isEmpty }
 
     /** Saves [entity] the way a chunk save does, failing the test on any serialization problem. */
     private fun save(helper: GameTestHelper, entity: ItemEntity): CompoundTag {
@@ -98,5 +213,10 @@ class DropStackerGameTests {
 
     private companion object {
         const val COUNT_KEY = "DropStackerCount"
+
+        /** `Mob.pickUpItem` is protected; names are unobfuscated in 26.x, so plain reflection works. */
+        val PICK_UP_ITEM = Mob::class.java
+            .getDeclaredMethod("pickUpItem", ServerLevel::class.java, ItemEntity::class.java)
+            .apply { isAccessible = true }
     }
 }
