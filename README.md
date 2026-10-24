@@ -139,6 +139,14 @@ A format without `{timer}`, `{time}` or `{timerColor}` never changes while a pil
 
 With `labelThroughWalls` set to `false`, clients are told that labelled piles are "discrete" (like a sneaking player), so the vanilla client hides their name tag behind blocks. The flag is only added to the data sent to clients; the item itself is unchanged on the server.
 
+**Clients with [Entity Culling](https://modrinth.com/mod/entityculling):** Entity Culling stops rendering entities that are completely hidden and draws their name tags itself. For entities that are not mobs it does not check the "discrete" flag, so the label of a fully enclosed pile shows through walls again. Add `minecraft:item` to `entityWhitelist` in the client's `config/entityculling.json` so item entities are never culled; vanilla then renders them and hides the label behind blocks as intended:
+
+```json
+"entityWhitelist": ["minecraft:item"]
+```
+
+Keep the entries already in that list when adding it. Modpacks can ship this as a default config.
+
 ### A note on `ageInheritance`
 
 The default `YOUNGEST` means a pile inherits the longest remaining lifetime when it absorbs a drop — so a pile next to a farm keeps resetting its despawn timer and effectively never despawns. That is convenient, but on a busy server it lets item piles accumulate indefinitely. Set `KEEP_RECEIVER` for vanilla despawn behaviour.
