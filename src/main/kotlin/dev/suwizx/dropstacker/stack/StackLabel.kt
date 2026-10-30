@@ -161,7 +161,9 @@ object StackLabel {
                 continue
             }
             if (code == '#' && i + 8 <= text.length) {
-                val rgb = text.substring(i + 2, i + 8).toIntOrNull(16)
+                val digits = text.substring(i + 2, i + 8)
+                // `toIntOrNull(16)` alone also accepts a sign, which is not a colour.
+                val rgb = if (digits.all { it.digitToIntOrNull(16) != null }) digits.toInt(16) else null
                 if (rgb != null) {
                     flush()
                     style = Style.EMPTY.withColor(TextColor.fromRgb(rgb))

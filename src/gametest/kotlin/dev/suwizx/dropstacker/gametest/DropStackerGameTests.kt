@@ -8,13 +8,17 @@ import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.ChatFormatting
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTestHelper
-import net.minecraft.network.chat.TextColor
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.chat.Component
+import net.minecraft.network.chat.TextColor
+import net.minecraft.network.protocol.Packet
+import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket
+import net.minecraft.server.level.ServerEntity
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.util.ProblemReporter
 import net.minecraft.world.SimpleContainer
 import net.minecraft.world.entity.EntityTypes
+import net.minecraft.world.entity.UpdateInterval
 import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.entity.item.ItemEntity
@@ -339,6 +343,76 @@ class DropStackerGameTests {
         DropStackerConfig.labelThroughWalls = true
         val unchanged = LabelVisibility.withDiscreteFlag(labelled, labelled.entityData.nonDefaultValues!!)
         helper.assertTrue(unchanged.none { it.id() == 0 }, "nothing should change while labels may show through walls")
+        helper.succeed()
+    }
+
+    /** The flag must reach the packets a real [ServerEntity] sends, both on tracking start and on later updates. */
+    @GameTest
+    fun discreteFlagReachesSentPackets(helper: GameTestHelper) = withConfig({
+        labelThroughWalls = false
+    }) {
+        val labelled = pile(helper, 200)
+        val sent = mutableListOf<Packet<*>>()
+        val synchronizer = object : ServerEntity.Synchronizer {
+            override fun sendToTrackingPlayers(packet: Packet<in net.minecraft.network.protocol.game.ClientGamePacketListener>) {
+                sent += packet
+            }
+
+            override fun sendToTrackingPlayersAndSelf(packet: Packet<in net.minecraft.network.protocol.game.ClientGamePacketListener>) {
+                sent += packet
+            }
+
+            override fun sendToTrackingPlayersFiltered(
+                packet: Packet<in net.minecraft.network.protocol.game.ClientGamePacketListener>,
+                filter: java.util.function.Predicate<net.minecraft.server.level.ServerPlayer>,
+            ) {
+                sent += packet
+            }
+        }
+        val tracker = ServerEntity(helper.level, labelled, UpdateInterval.periodic(1), false, synchronizer)
+
+        tracker.sendPairingData(helper.makeMockServerPlayerInLevel()) { sent += it }
+        helper.assertTrue(isDiscrete(sent), "the pairing packet should carry the discrete flag")
+
+        sent.clear()
+        labelled.item = labelled.item.copyWithCount(150)
+        tracker.sendChanges()
+        helper.assertTrue(sent.any { it is ClientboundSetEntityDataPacket }, "a count change should send an entity data packet")
+        helper.assertTrue(isDiscrete(sent), "the update packet should carry the discrete flag")
+        helper.succeed()
+    }
+
+    /** True if some entity data packet in [packets] sets the discrete bit in the shared flags. */
+    private fun isDiscrete(packets: List<Packet<*>>): Boolean = packets
+        .filterIsInstance<ClientboundSetEntityDataPacket>()
+        .flatMap { it.packedItems() }
+        .any { it.id() == 0 && ((it.value() as Byte).toInt() and LabelVisibility.DISCRETE_FLAG_MASK) != 0 }
+
+    /** Malformed `&` codes in a user-written format must never throw or produce an unsavable colour. */
+    @GameTest
+    fun malformedLabelFormatsAreTolerated(helper: GameTestHelper) = withConfig({
+        showDespawnTimer = false
+    }) {
+        val cases = mapOf(
+            "&" to "&",
+            "{count}&" to "200&",
+            "&#12{count}" to "&#12200",
+            "&#zzzzzz{count}" to "&#zzzzzz200",
+            "&q{count}" to "&q200",
+            "&&{count}" to "&200",
+            "{unknown}{count}" to "{unknown}200",
+        )
+        for ((format, expected) in cases) {
+            DropStackerConfig.labelFormat = format
+            val label = pile(helper, 200).customName?.string
+            helper.assertTrue(label == expected, "format '$format' should give '$expected', got '$label'")
+        }
+
+        // A sign in the hex digits is not a colour: `toIntOrNull(16)` would accept it as a negative number.
+        DropStackerConfig.labelFormat = "&#-1abcd{count}"
+        val signed = pile(helper, 200)
+        val loaded = load(helper, save(helper, signed))
+        helper.assertTrue(loaded.customName?.string == "&#-1abcd200", "a signed hex value must stay plain text, got '${loaded.customName?.string}'")
         helper.succeed()
     }
 
