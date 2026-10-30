@@ -4,7 +4,7 @@ A Fabric mod for Minecraft that automatically stacks dropped item entities on th
 
 ## Features
 
-- **Instant Merging:** New drops are absorbed into a nearby pile the moment they spawn — in the same tick, not after a scan interval. A mob's drops collapse before you see them land.
+- **Instant Merging:** New drops join a nearby pile the moment they spawn — in the same tick, not after a scan interval. A mob's drops collapse before you see them land. Thrown items (a player pressing Q, villagers and piglins handing items over) keep their throw and join once they land.
 - **Whole-Pile Collapse:** Each merge pass drains every compatible neighbour at once, so a 100-item pile becomes one entity in a single pass instead of one item per pass.
 - **Limitless Piles:** Stacks beyond vanilla's 64-item limit — up to your configured `maxStackSize`, with per-item overrides.
 - **Visual Feedback:** Colorful stack count label displayed above items (configurable thresholds).
@@ -12,8 +12,10 @@ A Fabric mod for Minecraft that automatically stacks dropped item entities on th
 - **Adaptive Scanning:** Idle piles progressively back off from scanning (up to `maxScanInterval`), so a world full of settled items costs almost nothing. Safe because new drops push into piles on spawn rather than waiting to be polled.
 - **Item Rules:** Blacklist, whitelist, and per-item stack-size overrides — all accepting item tags (`#minecraft:logs`) as well as exact ids.
 - **Runtime Control:** `/dropstacker` reloads config, reports stats, and tunes settings without a restart.
+- **Exact Matches Only:** Only items with identical components merge — the same enchantments, durability, name, contents and so on. Two differently enchanted swords stay two entities.
+- **Safe Pickups:** Players, hoppers, hopper minecarts and mobs collect a pile one vanilla stack at a time. Nothing is trimmed away by a slot limit, and logging mods such as Ledger can record every pickup and drop (their item codec only accepts counts up to 99).
 - **Respects Named Items:** An item entity with its own custom name is never relabelled or silently absorbed into another pile.
-- **Vanilla Parity:** Merging honours vanilla's infinite-lifetime, near-despawn, and infinite-pickup-delay guards, and keeps the longest pickup delay so merging can't shorten it.
+- **Vanilla Parity:** Merging honours vanilla's infinite-lifetime, near-despawn, and infinite-pickup-delay guards, keeps the longest pickup delay so merging can't shorten it, only merges drops reserved for the same player, and merges into the larger pile so a pile never jumps to a single item.
 - **Server-Side Only:** All logic runs on the server. Vanilla clients see counts and timers with no mod installed.
 
 ## Requirements

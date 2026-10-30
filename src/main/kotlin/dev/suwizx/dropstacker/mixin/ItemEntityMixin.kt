@@ -6,11 +6,16 @@ import dev.suwizx.dropstacker.config.LabelMode
 import dev.suwizx.dropstacker.stack.StackEngine
 import dev.suwizx.dropstacker.stack.StackLabel
 import net.minecraft.network.chat.Component
+import net.minecraft.world.entity.Entity
+import net.minecraft.world.entity.EntityReference
 import net.minecraft.world.entity.item.ItemEntity
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.level.storage.ValueInput
 import net.minecraft.world.level.storage.ValueOutput
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation
+import net.minecraft.world.entity.player.Player
 import org.spongepowered.asm.mixin.Mixin
 import org.spongepowered.asm.mixin.Shadow
 import org.spongepowered.asm.mixin.Unique
@@ -19,6 +24,8 @@ import org.spongepowered.asm.mixin.injection.Inject
 import org.spongepowered.asm.mixin.injection.ModifyArg
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable
+import java.util.Objects
+import java.util.UUID
 
 @Mixin(ItemEntity::class)
 abstract class ItemEntityMixin : ItemEntityAccessor {
@@ -30,6 +37,12 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
 
     @Shadow
     private var age = 0
+
+    @Shadow
+    private var target: UUID? = null
+
+    @Shadow
+    private var thrower: EntityReference<Entity>? = null
 
     /** The last [StackLabel.labelKey] actually written to this entity's custom name. */
     @Unique
@@ -49,7 +62,25 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
     @Unique
     private var dropstackerAppliedLabel: Component? = null
 
+    @Unique
+    private var dropstackerCollecting: Boolean = false
+
+    @Unique
+    private var dropstackerDiscardedWhileCollecting: Boolean = false
+
     // --- ItemEntityAccessor ---
+
+    override var dropstacker_collecting: Boolean
+        get() = dropstackerCollecting
+        set(value) {
+            dropstackerCollecting = value
+        }
+
+    override var dropstacker_discardedWhileCollecting: Boolean
+        get() = dropstackerDiscardedWhileCollecting
+        set(value) {
+            dropstackerDiscardedWhileCollecting = value
+        }
 
     override fun dropstacker_pickupDelay(): Int = this.pickupDelay
 
@@ -59,6 +90,22 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
 
     override fun dropstacker_setAge(value: Int) {
         this.age = value
+    }
+
+    override fun dropstacker_hasThrower(): Boolean = this.thrower != null
+
+    override fun dropstacker_target(): UUID? = this.target
+
+    override fun dropstacker_setOwnership(target: UUID?, thrower: EntityReference<Entity>?) {
+        this.target = target
+        this.thrower = thrower
+    }
+
+    override fun dropstacker_copyStateTo(other: ItemEntity) {
+        val access = other as ItemEntityAccessor
+        access.dropstacker_setPickupDelay(this.pickupDelay)
+        access.dropstacker_setAge(this.age)
+        access.dropstacker_setOwnership(this.target, this.thrower)
     }
 
     override fun dropstacker_resetBackoff() {
@@ -156,6 +203,7 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
         val entity = this as Any as ItemEntity
         val thisStack = this.getItem()
         if (!ItemStack.isSameItemSameComponents(thisStack, other.item)) return
+        if (!Objects.equals(this.target, (other as ItemEntityAccessor).dropstacker_target())) return
 
         ci.cancel()
 
@@ -166,6 +214,12 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
             // New instance so the synched stack actually changes; also refreshes the label.
             entity.item = thisStack.copyWithCount(thisStack.count + taken)
         }
+    }
+
+    /** Players pick a pile up one vanilla stack per touch; see [StackEngine.withVanillaSizedPile]. */
+    @WrapMethod(method = ["playerTouch"])
+    private fun dropstackerPlayerTakesOneStack(player: Player, original: Operation<Void>) {
+        StackEngine.withVanillaSizedPile(this as Any as ItemEntity) { original.call(player) }
     }
 
     // --- persistence ---
@@ -192,11 +246,18 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
         return stack.copyWithCount(Item.ABSOLUTE_MAX_STACK_SIZE)
     }
 
-    /** Records the true count alongside the capped stack. */
+    /**
+     * Records the true count alongside the capped stack, and whether the saved custom name is our
+     * own label. Without that flag a reloaded label looks like a foreign name: it would never be
+     * updated again and the pile would never merge again.
+     */
     @Inject(method = ["addAdditionalSaveData"], at = [At("TAIL")])
     private fun dropstackerOnSave(output: ValueOutput, ci: CallbackInfo) {
         val count = this.getItem().count
         if (count > Item.ABSOLUTE_MAX_STACK_SIZE) output.putInt(StackEngine.SAVED_COUNT_KEY, count)
+
+        val name = (this as Any as ItemEntity).customName
+        if (name != null && name == dropstackerAppliedLabel) output.putBoolean(StackEngine.SAVED_LABEL_KEY, true)
     }
 
     /**
@@ -206,6 +267,14 @@ abstract class ItemEntityMixin : ItemEntityAccessor {
      */
     @Inject(method = ["readAdditionalSaveData"], at = [At("TAIL")])
     private fun dropstackerOnLoad(input: ValueInput, ci: CallbackInfo) {
+        // `Entity.load` restores the custom name before this runs, so the saved label is already set.
+        val entity = this as Any as ItemEntity
+        if (input.getBooleanOr(StackEngine.SAVED_LABEL_KEY, false) && entity.customName != null) {
+            dropstackerAppliedLabel = entity.customName
+            dropstackerLabelKey = Long.MIN_VALUE + 1
+            dropstacker_refreshLabel()
+        }
+
         val saved = input.getIntOr(StackEngine.SAVED_COUNT_KEY, 0)
         val stack = this.getItem()
         if (stack.isEmpty || stack.count != Item.ABSOLUTE_MAX_STACK_SIZE || saved <= stack.count) return
